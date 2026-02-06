@@ -7,6 +7,7 @@ use App\Models\OrderItem;
 use App\Models\Product;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use App\Services\PaymentService;
 
 class OrderService
 {
@@ -16,49 +17,49 @@ class OrderService
     public function create(int $userId, array $items): Order
     {
         return DB::transaction(function () use ($userId, $items) {
+
             $order = Order::create([
-                "user_id" => $userId,
-                "status" => "pending",
-                "total" => 0,
+                'user_id' => $userId,
+                'status'  => 'pending',
+                'total'   => 0,
             ]);
 
             $total = 0;
 
             foreach ($items as $item) {
-                $product = Product::lockForUpdate()->find($item["product_id"]);
+                $product = Product::lockForUpdate()->find($item['product_id']);
 
-                if (!$product) {
-                    throw ValidationException::withMessages([
-                        "product_id" => "Produto não encontrado",
-                    ]);
+                if ($product->stock < $item['quantity']) {
+                    throw new \Exception('Estoque insuficiente');
                 }
 
-                if ($product->stock < $item["quantity"]) {
-                    throw ValidationException::withMessages([
-                        "stock" => "Estoque insuficiente para {$product->name}",
-                    ]);
-                }
-
-                $subtotal = $product->price * $item["quantity"];
+                $subtotal = $product->price * $item['quantity'];
 
                 OrderItem::create([
-                    "order_id" => $order->id,
-                    "product_id" => $product->id,
-                    "quantity" => $item["quantity"],
-                    "price" => $product->price,
+                    'order_id'   => $order->id,
+                    'product_id' => $product->id,
+                    'quantity'   => $item['quantity'],
+                    'price'      => $product->price,
                 ]);
 
-                // Atualiza estoque
-                $product->decrement("stock", $item["quantity"]);
+                $product->decrement('stock', $item['quantity']);
 
                 $total += $subtotal;
             }
 
-            $order->update([
-                "total" => $total,
-            ]);
+            $order->update(['total' => $total]);
 
-            return $order->load("items.product");
+            $paymentService = app(PaymentService::class);
+
+            $paid = $paymentService->pay($order->id, $total);
+
+            if (!$paid) {
+                throw new \Exception('Pagamento recusado');
+            }
+
+            $order->update(['status' => 'paid']);
+
+            return $order->load('items.product');
         });
     }
 }
